@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Star Collector</title>
+<style>
+  :root {
+    --accent: #FFE564;
+    --bg1: #0b0d2a;
+    --bg2: #1a1650;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: radial-gradient(ellipse at center, var(--bg2) 0%, var(--bg1) 70%);
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  }
+  #game-wrap {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    background: transparent;
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    border: 2px solid rgba(255, 229, 100, 0.3);
+    border-radius: 12px;
+  }
+  #hud {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--accent);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-shadow: 0 0 10px rgba(255, 229, 100, 0.6);
+    pointer-events: none;
+    display: flex;
+    gap: 24px;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #fff;
+    background: rgba(11, 13, 42, 0.85);
+    gap: 14px;
+    padding: 20px;
+  }
+  #overlay h1 {
+    color: var(--accent);
+    font-size: 32px;
+    margin: 0;
+    text-shadow: 0 0 16px rgba(255, 229, 100, 0.5);
+  }
+  #overlay p {
+    max-width: 420px;
+    line-height: 1.5;
+    color: #d7d7ff;
+    margin: 0;
+  }
+  button {
+    background: var(--accent);
+    color: #14123a;
+    border: none;
+    padding: 12px 28px;
+    font-size: 16px;
+    font-weight: 700;
+    border-radius: 999px;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: transform 0.15s ease;
+  }
+  button:hover { transform: scale(1.05); }
+  .hidden { display: none !important; }
+  #hint {
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #9d9de0;
+    font-size: 13px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="game" width="480" height="720"></canvas>
+  <div id="hud">
+    <span>â­ <span id="score">0</span></span>
+    <span>â¤ï¸ <span id="lives">3</span></span>
+  </div>
+  <div id="hint">Arrow keys / A-D to move &nbsp;â¢&nbsp; Collect stars, dodge asteroids</div>
+  <div id="overlay">
+    <h1>Star Collector</h1>
+    <p>Collect falling stars to score points, and dodge the asteroids. The game speeds up as your score rises. You have 3 lives.</p>
+    <button id="start-btn">Start Playing</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('start-btn');
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // --- Game state ---
+  let ship, stars, asteroids, score, lives, running, spawnTimer, bgStars;
+  const keys = {};
+
+  function resetGame() {
+    ship = { x: W / 2 - 18, y: H - 70, w: 36, h: 36, speed: 6 };
+    stars = [];
+    asteroids = [];
+    score = 0;
+    lives = 3;
+    running = true;
+    spawnTimer = 0;
+    bgStars = Array.from({ length: 80 }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: Math.random() * 1.6 + 0.3,
+      speed: Math.random() * 0.6 + 0.2
+    }));
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+  }
+
+  function spawnEntity() {
+    const isStar = Math.random() < 0.55;
+    const size = isStar ? 22 : Math.random() * 26 + 20;
+    const entity = {
+      x: Math.random() * (W - size),
+      y: -size,
+      size,
+      speed: (isStar ? 2.2 : 2.6) + score * 0.02 + Math.random() * 1.2,
+      rotation: 0,
+      rotSpeed: (Math.random() - 0.5) * 0.1
+    };
+    if (isStar) stars.push(entity);
+    else asteroids.push(entity);
+  }
+
+  function rectsOverlap(a, ax, ay, aw, ah, bx, by, bs) {
+    return ax < bx + bs && ax + aw > bx && ay < by + bs && ay + ah > by;
+  }
+
+  function drawBackground() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#dfe0ff';
+    bgStars.forEach(s => {
+      s.y += s.speed;
+      if (s.y > H) s.y = 0;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  function drawShip() {
+    ctx.save();
+    ctx.translate(ship.x + ship.w / 2, ship.y + ship.h / 2);
+    ctx.fillStyle = '#FFE564';
+    ctx.beginPath();
+    ctx.moveTo(0, -ship.h / 2);
+    ctx.lineTo(ship.w / 2, ship.h / 2);
+    ctx.lineTo(0, ship.h / 3);
+    ctx.lineTo(-ship.w / 2, ship.h / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,229,100,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(0, ship.h / 2 + 6, 8, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawStar(s) {
+    ctx.save();
+    ctx.translate(s.x + s.size / 2, s.y + s.size / 2);
+    ctx.rotate(s.rotation);
+    ctx.fillStyle = '#FFE564';
+    ctx.shadowColor = '#FFE564';
+    ctx.shadowBlur = 10;
+    const spikes = 5, outer = s.size / 2, inner = outer / 2.2;
+    ctx.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const r = i % 2 === 0 ? outer : inner;
+      const a = (Math.PI / spikes) * i;
+      ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawAsteroid(a) {
+    ctx.save();
+    ctx.translate(a.x + a.size / 2, a.y + a.size / 2);
+    ctx.rotate(a.rotation);
+    ctx.fillStyle = '#8b7d9b';
+    ctx.strokeStyle = '#5c5177';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const points = 8;
+    for (let i = 0; i < points; i++) {
+      const ang = (Math.PI * 2 / points) * i;
+      const r = a.size / 2 * (0.8 + Math.sin(i * 7) * 0.15);
+      ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function update() {
+    if (!running) return;
+
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) ship.x -= ship.speed;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) ship.x += ship.speed;
+    ship.x = Math.max(0, Math.min(W - ship.w, ship.x));
+
+    spawnTimer++;
+    const spawnRate = Math.max(18, 40 - Math.floor(score / 5));
+    if (spawnTimer >= spawnRate) {
+      spawnTimer = 0;
+      spawnEntity();
+    }
+
+    stars.forEach(s => { s.y += s.speed; s.rotation += s.rotSpeed; });
+    asteroids.forEach(a => { a.y += a.speed; a.rotation += a.rotSpeed; });
+
+    stars = stars.filter(s => {
+      if (s.y > H) return false;
+      if (rectsOverlap(ship, ship.x, ship.y, ship.w, ship.h, s.x, s.y, s.size)) {
+        score += 10;
+        scoreEl.textContent = score;
+        return false;
+      }
+      return true;
+    });
+
+    asteroids = asteroids.filter(a => {
+      if (a.y > H) return false;
+      if (rectsOverlap(ship, ship.x, ship.y, ship.w, ship.h, a.x, a.y, a.size)) {
+        lives -= 1;
+        livesEl.textContent = lives;
+        if (lives <= 0) gameOver();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function gameOver() {
+    running = false;
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <h1>Game Over</h1>
+      <p>You scored <strong style="color:#FFE564">${score}</strong> points. Try again and beat your record!</p>
+      <button id="restart-btn">Play Again</button>
+    `;
+    document.getElementById('restart-btn').addEventListener('click', () => {
+      overlay.classList.add('hidden');
+      resetGame();
+      loop();
+    });
+  }
+
+  function draw() {
+    drawBackground();
+    stars.forEach(drawStar);
+    asteroids.forEach(drawAsteroid);
+    drawShip();
+  }
+
+  function loop() {
+    update();
+    draw();
+    if (running) requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('keydown', e => { keys[e.key] = true; });
+  window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+  // Touch controls: tap left/right half of canvas
+  canvas.addEventListener('touchstart', handleTouch, { passive: true });
+  canvas.addEventListener('touchmove', handleTouch, { passive: true });
+  function handleTouch(e) {
+    if (!running) return;
+    const rect = canvas.getBoundingClientRect();
+    const touchX = e.touches[0].clientX - rect.left;
+    const scaleX = canvas.width / rect.width;
+    ship.x = touchX * scaleX - ship.w / 2;
+    ship.x = Math.max(0, Math.min(W - ship.w, ship.x));
+  }
+
+  startBtn.addEventListener('click', () => {
+    overlay.classList.add('hidden');
+    resetGame();
+    loop();
+  });
+})();
+</script>
+</body>
+</html>
+
